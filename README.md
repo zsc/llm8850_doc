@@ -18,6 +18,7 @@
   - [Git LFS（可选）](#git-lfs可选)
 - [常见运行模式（模型/应用）](#常见运行模式模型应用)
   - [视觉模型快速体验（axcl_demo.zip）](#视觉模型快速体验axcl_demozip)
+  - [Whisper（whisper.axcl）离线语音转文字](#whisperwhisperaxcl离线语音转文字)
   - [OpenAI 兼容 API（文本对话）](#openai-兼容-api文本对话)
   - [OpenAI 兼容 API（CosyVoice2 文本转语音）](#openai-兼容-apicosyvoice2-文本转语音)
 - [NPU 示例与工具链](#npu-示例与工具链)
@@ -302,6 +303,76 @@ unzip axcl_demo.zip
 - `offline/zh_CN_guide_ai_accelerator_llm-8850_m5_llm_8850_superresolution.md`
 - `offline/zh_CN_guide_ai_accelerator_llm-8850_m5_llm_8850_rife.md`
 
+### Whisper（whisper.axcl）离线语音转文字
+
+官方 Whisper 小节给了“编译 + 运行”的命令，但没有把 `.axmodel` 的来源说清楚：`whisper.axcl` 只是示例代码与可执行程序，**真正跑推理还需要下载预编译好的模型文件（`.axmodel`）**。
+
+以 `whisper-small` 为例，预编译模型在 Hugging Face：`M5Stack/whisper-small-axmodel`（AX650 版本在 `ax650/` 目录）。下面是在 Raspberry Pi 5 上按文档跑通示例的一套可复用流程（包含你当前的网络约束：GitHub 走 `7890` 代理，Hugging Face 走 `hf-mirror.com` 且不占代理带宽）。
+
+1) 获取源码（GitHub 走代理）
+
+```bash
+mkdir -p ~/rsp && cd ~/rsp
+env http_proxy=http://127.0.0.1:7890 https_proxy=http://127.0.0.1:7890 \
+  git clone --depth 1 https://github.com/ml-inory/whisper.axcl.git
+```
+
+2) 编译安装（得到 `install/whisper`）
+
+```bash
+cd ~/rsp/whisper.axcl
+./build.sh
+```
+
+3) 下载预编译模型（Hugging Face 用 `hf-mirror.com`，禁用代理）
+
+> 说明：有些网络环境下 `git lfs pull` 可能会卡在 LFS 域名解析/鉴权；此时直接用 `resolve/main/...` 下载最稳（`curl -L` 会自动跟随重定向）。
+
+```bash
+cd ~/rsp/whisper.axcl/install
+mkdir -p models
+
+env no_proxy='*' http_proxy= https_proxy= \
+  curl -fL -o models/small-encoder.axmodel \
+  'https://hf-mirror.com/M5Stack/whisper-small-axmodel/resolve/main/ax650/small-encoder.axmodel'
+
+env no_proxy='*' http_proxy= https_proxy= \
+  curl -fL -o models/small-decoder-main.axmodel \
+  'https://hf-mirror.com/M5Stack/whisper-small-axmodel/resolve/main/ax650/small-decoder-main.axmodel'
+
+env no_proxy='*' http_proxy= https_proxy= \
+  curl -fL -o models/small-decoder-loop.axmodel \
+  'https://hf-mirror.com/M5Stack/whisper-small-axmodel/resolve/main/ax650/small-decoder-loop.axmodel'
+
+env no_proxy='*' http_proxy= https_proxy= \
+  curl -fL -o models/small-positional_embedding.bin \
+  'https://hf-mirror.com/M5Stack/whisper-small-axmodel/resolve/main/small-positional_embedding.bin'
+
+env no_proxy='*' http_proxy= https_proxy= \
+  curl -fL -o models/small-tokens.txt \
+  'https://hf-mirror.com/M5Stack/whisper-small-axmodel/resolve/main/small-tokens.txt'
+```
+
+4) 准备运行时配置文件（否则会提示找不到 `t2s.json`）
+
+`whisper` 在运行时会加载 OpenCC 的 `t2s.json`（繁转简配置），并且它按 **当前工作目录（CWD）**找文件。文档示例是在 `install/` 目录运行，因此把这些文件拷进去：
+
+```bash
+cd ~/rsp/whisper.axcl/install
+cp ../t2s.json ../TSCharacters.ocd2 ../TSPhrases.ocd2 .
+```
+
+5) 运行（与官方示例一致）
+
+```bash
+cd ~/rsp/whisper.axcl/install
+./whisper -w ../demo.wav
+```
+
+正常会在末尾输出 `Result: ...` 的识别结果。
+
+> 磁盘紧张提示：模型文件较大，只保留 `install/models/` 一份即可（不需要在 `~/rsp/whisper.axcl/models/` 再放一份重复文件）。
+
 ### OpenAI 兼容 API（文本对话）
 
 文档提供了一套 **OpenAI API 兼容**的本地服务（默认本机 `8000` 端口），安装 StackFlow 包后即可使用：
@@ -460,6 +531,15 @@ open /dev/axcl_host fail, errno: 2 No such file or directory
 2) 检查加速卡是否插紧；断电后重启  
 3) 卸载并重新安装驱动（`sudo apt remove axclhost` 后重新安装）
 
+补充：如果你近期升级过内核（`uname -r` 变了），可能是 DKMS 没有为**当前内核**编译模块，导致节点未创建。可尝试：
+
+```bash
+sudo /usr/sbin/dkms autoinstall -k "$(uname -r)"
+sudo modprobe axcl_host
+ls -l /dev/axcl_host
+axcl-smi
+```
+
 参考原文：`offline/zh_CN_guide_ai_accelerator_llm-8850_m5_llm_8850_faq.md`
 
 ## 离线文档索引（按主题）
@@ -536,4 +616,3 @@ open /dev/axcl_host fail, errno: 2 No such file or directory
 - Immich：`offline/zh_CN_guide_ai_accelerator_llm-8850_m5_llm_8850_immich.md`
 - OpenAI API：`offline/zh_CN_guide_ai_accelerator_llm-8850_m5_llm_8850_openai.md`
 - CosyVoice2 API：`offline/zh_CN_guide_ai_accelerator_llm-8850_m5_llm_8850_cosy_voice2_api.md`
-
