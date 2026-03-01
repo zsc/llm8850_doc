@@ -16,9 +16,13 @@
   - [AXCL FFmpeg（硬解码/转码）](#axcl-ffmpeg硬解码转码)
   - [Docker（可选）](#docker可选)
   - [Git LFS（可选）](#git-lfs可选)
+  - [systemctl（StackFlow 服务管理）](#systemctlstackflow-服务管理)
+  - [代理/镜像（网络）](#代理镜像网络)
+  - [磁盘与日志清理](#磁盘与日志清理)
 - [常见运行模式（模型/应用）](#常见运行模式模型应用)
   - [视觉模型快速体验（axcl_demo.zip）](#视觉模型快速体验axcl_demozip)
   - [Whisper（whisper.axcl）离线语音转文字](#whisperwhisperaxcl离线语音转文字)
+  - [SenseVoice（Python）语音识别](#sensevoicepython语音识别)
   - [OpenAI 兼容 API（文本对话）](#openai-兼容-api文本对话)
   - [OpenAI 兼容 API（CosyVoice2 文本转语音）](#openai-兼容-apicosyvoice2-文本转语音)
 - [NPU 示例与工具链](#npu-示例与工具链)
@@ -98,6 +102,20 @@ echo 'deb [signed-by=/etc/apt/keyrings/StackFlow.gpg] https://repo.llm.m5stack.c
 
 sudo apt update
 sudo apt install -y dkms axclhost
+```
+
+### 3.5) StackFlow（LLM8850）软件源（OpenAI API / CosyVoice2 等）
+
+`axclhost` 这个源主要提供驱动与基础工具；如果你还要安装 `llm-openai-api`、CosyVoice2、Qwen 等 **StackFlow 模型/服务包**，还需要添加 `bookworm/llm8850` 组件：
+
+```bash
+# 如果你已经按上一步安装过 axclhost，这个 key 一般已存在；重复执行也没问题
+sudo wget -qO /etc/apt/keyrings/StackFlow.gpg https://repo.llm.m5stack.com/m5stack-apt-repo/key/StackFlow.gpg
+
+echo 'deb [signed-by=/etc/apt/keyrings/StackFlow.gpg] https://repo.llm.m5stack.com/m5stack-apt-repo bookworm llm8850' \
+  | sudo tee /etc/apt/sources.list.d/llm8850.list
+
+sudo apt update
 ```
 
 安装完成后，为了让新安装的可执行程序立即可用，更新终端环境：
@@ -265,6 +283,120 @@ git lfs install
 
 参考原文：`offline/zh_CN_guide_ai_accelerator_llm-8850_m5_llm_8850_git_lfs.md`
 
+### systemctl（StackFlow 服务管理）
+
+StackFlow 的 **OpenAI 兼容 API / LLM / TTS / ASR** 往往以 systemd 服务形式运行（安装对应 `llm-*` 包后自动安装/启用）。常见服务（不同固件/版本可能略有差异）：
+
+- `llm-sys`：模型/资源管理与后端调度（建议先启动）
+- `llm-openai-api`：OpenAI 兼容 API 服务（默认监听 `0.0.0.0:8000`）
+- `llm-llm`：文本大模型后端（安装对应 `llm-model-*` 后使用）
+- `llm-cosy-voice`：CosyVoice2 TTS 后端
+
+常用命令：
+
+```bash
+# 查看状态
+sudo systemctl status llm-sys llm-openai-api llm-cosy-voice
+
+# 安装新模型 / 改配置后常用：重启服务
+sudo systemctl restart llm-sys llm-openai-api llm-cosy-voice
+
+# 查看日志（排错最常用）
+sudo journalctl -u llm-openai-api -n 200 --no-pager
+sudo journalctl -u llm-sys -n 200 --no-pager
+sudo journalctl -u llm-cosy-voice -n 200 --no-pager
+```
+
+提示：
+
+- 文档通常强调“安装新模型后重启 `llm-openai-api` 以刷新模型列表”；如果你发现模型仍没出现，可以再补一个 `sudo systemctl restart llm-sys`。
+- 查看当前可用模型：`curl http://127.0.0.1:8000/v1/models -H "Content-Type: application/json"`。
+
+### 代理/镜像（网络）
+
+国内网络环境下，经常需要对不同站点使用不同策略（以树莓派上本地代理 `127.0.0.1:7890` 为例）：
+
+- **GitHub**：常需要走代理才能稳定访问
+- **Hugging Face**：模型文件大，建议用 `hf-mirror.com`，并对该命令**禁用代理**以节省代理带宽
+
+建议不要全局 `export http_proxy=...`（容易忘记关），而是在需要时用 `env` 临时生效：
+
+```bash
+# 1) GitHub：走代理（git clone / pip / curl 等都可按这个写法）
+env http_proxy=http://127.0.0.1:7890 https_proxy=http://127.0.0.1:7890 \
+  git clone https://github.com/xxx/yyy.git
+
+# 2) Hugging Face：禁用代理 + 用 hf-mirror（curl -L 会跟随重定向）
+env no_proxy='*' http_proxy= https_proxy= \
+  curl -fL -o model.axmodel 'https://hf-mirror.com/<org>/<repo>/resolve/main/<path>'
+```
+
+如果你的工具只认大写变量，可同时设置：`HTTP_PROXY`、`HTTPS_PROXY`、`NO_PROXY`。
+
+补充：如果你用的是 Hugging Face 的 Python 下载器（`huggingface_hub` / `transformers` / `datasets`），很多场景也可以通过设置镜像端点来加速：
+
+```bash
+export HF_ENDPOINT="https://hf-mirror.com"
+```
+
+### 磁盘与日志清理
+
+LLM/语音模型包通常很大（例如 CosyVoice2 模型包下载约 1.2GB），树莓派系统盘容易紧张。下面这些操作相对安全、也最常用：
+
+1) 快速查看占用
+
+```bash
+df -h /
+sudo journalctl --disk-usage
+sudo du -sh /opt/m5stack/data 2>/dev/null || true
+```
+
+2) 清理 journald（系统日志）
+
+```bash
+sudo journalctl --disk-usage
+sudo journalctl --vacuum-size=100M
+sudo journalctl --disk-usage
+```
+
+3) 清理 APT 缓存与不再需要的包
+
+```bash
+sudo apt autoremove --purge -y
+sudo apt clean
+```
+
+4) Docker（如果你用过）
+
+```bash
+docker image ls
+
+# 例如删除占用较大的 ROS 镜像（按你的实际镜像名调整）
+docker rmi yahboomtechnology/ros2-foxy:2.0.1 yahboomtechnology/ros-melodic:1.2
+
+# 谨慎使用：会删除所有未使用的镜像/容器/网络（可能影响你现有服务）
+docker system prune -a
+```
+
+5) 删除重复模型文件
+
+- 以 `whisper.axcl` 为例：建议只保留一份 `install/models/`，不要在工程目录里再存第二份相同模型文件。
+
+6) 卸载不需要的模型包（StackFlow APT）
+
+StackFlow 的模型往往以 `llm-model-*` 形式安装，卸载可以直接释放大量空间（以 CosyVoice2 为例）：
+
+```bash
+# 查看已安装的模型包
+dpkg -l | grep -E '^ii\\s+llm-model-' || true
+
+# 卸载某个模型（示例）
+sudo apt remove -y llm-model-cosyvoice2-0.5b-axcl
+
+# 如模型数据目录仍残留，可手动删除（会影响该模型功能）
+sudo rm -rf /opt/m5stack/data/CosyVoice2-0.5B-axcl
+```
+
 ## 常见运行模式（模型/应用）
 
 不同模型/应用的交付形式不完全一致，但文档中常见模式大致分为三类：
@@ -306,6 +438,11 @@ unzip axcl_demo.zip
 ### Whisper（whisper.axcl）离线语音转文字
 
 官方 Whisper 小节给了“编译 + 运行”的命令，但没有把 `.axmodel` 的来源说清楚：`whisper.axcl` 只是示例代码与可执行程序，**真正跑推理还需要下载预编译好的模型文件（`.axmodel`）**。
+
+这里的“编译运行”可以拆成两件事：
+
+- **编译**：把仓库里的 C/C++ 源码编成可执行程序（典型产物是 `install/whisper`）。这一步不会生成 `.axmodel`。
+- **运行**：执行 `./whisper ...`，并加载 `.axmodel`、tokens、embedding 等运行时文件做推理。`.axmodel` 属于 **NPU 侧可执行模型**，通常由 Pulsar2 等工具链提前转换/编译好，再提供给你下载使用。
 
 以 `whisper-small` 为例，预编译模型在 Hugging Face：`M5Stack/whisper-small-axmodel`（AX650 版本在 `ax650/` 目录）。下面是在 Raspberry Pi 5 上按文档跑通示例的一套可复用流程（包含你当前的网络约束：GitHub 走 `7890` 代理，Hugging Face 走 `hf-mirror.com` 且不占代理带宽）。
 
@@ -373,6 +510,61 @@ cd ~/rsp/whisper.axcl/install
 
 > 磁盘紧张提示：模型文件较大，只保留 `install/models/` 一份即可（不需要在 `~/rsp/whisper.axcl/models/` 再放一份重复文件）。
 
+### SenseVoice（Python）语音识别
+
+SenseVoice 文档给的是 **Python 方式**（`pyaxengine` + 推理脚本）。典型特征：
+
+- 优点：上手快、支持 `auto/zh/en/yue/ja/ko` 等语言参数；首次运行会自动下载模型
+- 缺点：需要 Python 虚拟环境；首次运行依赖网络；仓库可能使用 Git LFS
+
+按文档在 Raspberry Pi 5 上运行的大致步骤：
+
+1) 拉取仓库（Hugging Face，可能需要 Git LFS）
+
+```bash
+sudo apt update
+sudo apt install -y git-lfs
+git lfs install
+
+mkdir -p ~/rsp && cd ~/rsp
+# Hugging Face 镜像（不走代理）示例：
+env no_proxy='*' http_proxy= https_proxy= \
+  git clone https://hf-mirror.com/AXERA-TECH/SenseVoice
+
+# 如果你直连 huggingface.co 更快，也可以用：
+# git clone https://huggingface.co/AXERA-TECH/SenseVoice
+cd SenseVoice
+```
+
+2) 创建虚拟环境并安装依赖
+
+```bash
+python -m venv sensevoice
+source sensevoice/bin/activate
+
+# pyaxengine wheel 在 GitHub Release 上：如 GitHub 访问需要代理，请临时加 http_proxy/https_proxy
+pip install https://github.com/AXERA-TECH/pyaxengine/releases/download/0.1.3.rc2/axengine-0.1.3-py3-none-any.whl
+pip install -r requirements.txt
+```
+
+3) 运行（首次会自动下载模型）
+
+```bash
+python main.py -i test.mp3
+
+# 可选参数：指定识别语言（默认 auto）
+python main.py -i test.mp3 -l auto
+python main.py -i test.mp3 -l zh
+```
+
+参考原文：`offline/zh_CN_guide_ai_accelerator_llm-8850_m5_llm_8850_sensevoice.md`
+
+#### Whisper vs SenseVoice 怎么选
+
+- 想要“编译后一个二进制直接跑 + 手动管理模型文件（完全离线）”：更偏向 **Whisper（whisper.axcl）**
+- 想要“Python 上手 + 自动下载模型 + 更丰富的语言/参数开关”：更偏向 **SenseVoice**
+- 最稳妥的方式：用你自己的音频样本各跑一遍，再决定（准确率、延迟、资源占用差异会很明显）
+
 ### OpenAI 兼容 API（文本对话）
 
 文档提供了一套 **OpenAI API 兼容**的本地服务（默认本机 `8000` 端口），安装 StackFlow 包后即可使用：
@@ -417,32 +609,103 @@ print(client.models.list())
 
 ### OpenAI 兼容 API（CosyVoice2 文本转语音）
 
-安装包与模型（示例）：
+前提：已按前文 **“3.5 StackFlow（LLM8850）软件源”** 添加 `bookworm llm8850` 源（否则 `apt` 找不到 `llm-*` 包）。
+
+#### 1) 安装（APT）
 
 ```bash
-sudo apt install lib-llm llm-sys llm-cosy-voice llm-openai-api
-sudo apt install llm-model-cosyvoice2-0.5b-axcl
-sudo systemctl restart llm-openai-api
+sudo apt update
+sudo apt install -y lib-llm llm-sys llm-cosy-voice llm-openai-api llm-model-cosyvoice2-0.5b-axcl
+
+# 安装/更新模型后建议重启（至少重启 llm-openai-api 用于刷新模型列表）
+sudo systemctl restart llm-sys llm-cosy-voice llm-openai-api
 ```
 
-文档说明：
+提示：
 
-- CosyVoice2 属于基于 LLM 的语音生成模型
-- 当前版本单次生成音频最大长度约 **27s**
-- 第一次加载模型可能较慢
+- CosyVoice2 属于基于 LLM 的语音生成模型，当前版本单次生成音频最大长度约 **27s**。
+- `llm-model-cosyvoice2-0.5b-axcl` 包体积较大（下载约 1.2GB），安装后模型数据默认在 `/opt/m5stack/data/CosyVoice2-0.5B-axcl/`。
 
-Curl 示例（生成 `wav`）：
+#### 2) 验证模型已注册
+
+```bash
+curl http://127.0.0.1:8000/v1/models -H "Content-Type: application/json"
+```
+
+正常应能看到 `CosyVoice2-0.5B-axcl`。
+
+#### 3) 生成语音（wav）
+
+实测在当前版本中建议显式传 `voice`；默认自带的提示音色目录是 `prompt_data`：
 
 ```bash
 curl http://127.0.0.1:8000/v1/audio/speech \
   -H "Content-Type: application/json" \
   -d '{
     "model": "CosyVoice2-0.5B-axcl",
+    "voice": "prompt_data",
+    "response_format": "wav",
+    "input": "你好，测试一下 CosyVoice2。"
+  }' \
+  -o output.wav
+
+# 播放（树莓派常用）
+aplay output.wav
+```
+
+#### 4) 音色克隆（可选）
+
+文档提供了 `CosyVoice2-scripts` 用于把一段“提示语音 + 对应文本”处理成特征文件目录（例如 `zh_woman1/`），再作为 `voice` 使用：
+
+```bash
+mkdir -p ~/rsp && cd ~/rsp
+
+# 先拉主仓库（Hugging Face 镜像；如你希望不占代理带宽，可禁用代理）
+env no_proxy='*' http_proxy= https_proxy= \
+  git clone https://hf-mirror.com/M5Stack/CosyVoice2-scripts
+cd CosyVoice2-scripts
+
+# 仓库包含 submodule：如 submodule 在 GitHub 且你访问 GitHub 需要代理，可在这一步加代理
+git submodule update --init --recursive
+# env http_proxy=http://127.0.0.1:7890 https_proxy=http://127.0.0.1:7890 \
+#   git submodule update --init --recursive
+
+python -m venv cosyvoice
+source cosyvoice/bin/activate
+pip install -r requirements.txt
+
+python3 scripts/process_prompt.py --prompt_text asset/zh_woman1.txt --prompt_speech asset/zh_woman1.wav --output zh_woman1
+
+# 把生成目录放到模型目录下（如提示权限不足再加 sudo）
+cp -r zh_woman1 /opt/m5stack/data/CosyVoice2-0.5B-axcl/
+
+# 让 llm-sys 重新初始化模型配置
+sudo systemctl restart llm-sys llm-openai-api
+```
+
+随后调用时把 `voice` 改为目录名即可：
+
+```bash
+curl http://127.0.0.1:8000/v1/audio/speech \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "CosyVoice2-0.5B-axcl",
+    "voice": "zh_woman1",
     "response_format": "wav",
     "input": "君不见黄河之水天上来，奔流到海不复回。"
   }' \
   -o output.wav
 ```
+
+如果你想把默认音色替换成你克隆的音色，可修改 `/opt/m5stack/data/models/mode_CosyVoice2-0.5B-axcl.json` 中的 `prompt_dir` 字段为对应目录名，并重启 `llm-sys`。
+
+#### 5) 常见报错排查
+
+- `POST /v1/audio/speech` 返回 `500` 且内容为 `{"detail":"Expecting value: line 1 column 1 (char 0)"}`：通常是后端未就绪或参数/音色目录不对。建议按顺序检查：
+  1) `curl /v1/models` 是否已出现 `CosyVoice2-0.5B-axcl`
+  2) 请求里显式加 `"voice": "prompt_data"`
+  3) `sudo systemctl restart llm-sys llm-cosy-voice llm-openai-api`
+  4) `sudo journalctl -u llm-openai-api -n 200 --no-pager`
 
 参考原文：`offline/zh_CN_guide_ai_accelerator_llm-8850_m5_llm_8850_cosy_voice2_api.md`
 
